@@ -1,8 +1,7 @@
-# Module 5
+# Module 5 -- Lab Session
 
-## Lab
 ---
-title: "Final_lab.Rmd"
+title: "Module5_lab.Rmd"
 author: "Rong & Mathieu"
 date: "2026-10-13"
 output: html_document
