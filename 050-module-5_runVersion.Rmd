@@ -160,6 +160,7 @@ REF_GENOME=reference/Homo_sapiens.GRCh38.fa
 NORMAL_ID=SPP_GT_0-1_1
 TUMOR_ID=SPP_GT_1-0_1
 
+out=~/workspace/Module5/purple_test/$TUMOR_ID
 
 # run
 java -Xmx${JAVA_MEM} -jar $PURPLE_JAR \
@@ -171,7 +172,7 @@ java -Xmx${JAVA_MEM} -jar $PURPLE_JAR \
   -ref_genome         $REF_GENOME \
   -ref_genome_version $GENOME_VERSION \
   -threads            $THREADS \
-  -output_dir         Mathieu_purple/purple_test/$TUMOR_ID
+  -output_dir         $out
 ```
 
 | Parameter | Meaning |
@@ -244,7 +245,7 @@ ggplot(purple_fit, aes(estimated_purity_from_fraction, purity)) +
 ***Summary***
 
 | Sample (BAM prefix) | Role | Tumor : Normal DNA | True Tumor DNA fraction | "True" Purity (estimated based on tDNA fraction) | Purity (estimated by PURPLE) |
-|-------------|----------|-------------|-------------|-------------|-------------|
+|------------|------------|------------|------------|------------|------------|
 | SPP_GT_0-1_1 | Normal | 0 : 1 | 0.00 | 0.00 | 0.00 |
 | SPP_GT_1-19_1 | Tumor | 1 : 19 | 0.05 | 0.04 | 0.15 |
 | SPP_GT_1-9_1 | Tumor | 1 : 9 | 0.10 | 0.07 | 0.16 |
@@ -387,7 +388,7 @@ genpipes dnaseq \
 ```
 
 | Parameter | Meaning |
-|------------------------|-----------------------------------------------|
+|-------------------------|-----------------------------------------------|
 | `dnaseq` | Pipeline to run |
 | `-t somatic_ensemble` | Protocol: tumor/normal pairs, ensemble of somatic callers |
 | `-c` | List of `.ini` files (order matters, later overrides earlier) |
@@ -465,66 +466,27 @@ GenPipes writes a `.done` file for each finished job. If you run the same comman
 
 - Plot any gene or chromosome with all the evidence in one figure.
 
-## Key concepts (read this first)
+## Key concepts
 
 | Term | Meaning |
 |-------------------------|-----------------------------------------------|
 | **Copy number (CN)** | How many copies of a DNA segment a cell has. Normal human cells have 2 (one from each parent). |
 | **Purity** | Fraction of cells in the sample that are tumor cells. The rest are normal cells with CN = 2. |
-| **Ploidy** | Average copy number across the tumor genome. HCC1395 is about 2.8, i.e. near-triploid. |
+| **Ploidy** | Average copy number across the tumor genome. |
 | **Major / minor allele CN** | The two parental copies are counted separately. A segment with CN 3 can be 2+1 (major 2, minor 1) or 3+0 (major 3, minor 0). |
 | **BAF (B-allele frequency)** | At a heterozygous SNP (A/B), the fraction of reads that carry the B allele. It is 0.5 in a normal cell. |
 | **LOH (loss of heterozygosity)** | One parental allele is lost (minor CN = 0). The BAF then moves to 0 or 1. If the remaining allele is duplicated, CN stays 2: **copy-neutral LOH (cnLOH)**. |
-| **Depth ratio** | Tumor read depth divided by normal read depth in a window. It goes up with gains and down with losses. |
 
 PURPLE combines two independent signals:
 
-- **COBALT** measures the **depth ratio** in 1 kb windows → tells us the *total* copy number.
+- **COBALT** measures the **depth ratio** in 1 kb windows → tells us the copy number ratio.
 - **AMBER** measures the **BAF** at germline heterozygous SNPs → tells us how the copies are split between the two alleles.
 
 Both signals are **diluted by normal cells**. With purity *p*, a segment with tumor copy number *CN* and minor-allele copy number *m* is expected to show:
 
-$$\text{depth ratio} =
-\frac{p \cdot CN + (1-p)\cdot 2}
-{p \cdot \text{ploidy} + (1-p)\cdot 2}
-\qquad
-\text{BAF} =
-\frac{p \cdot m + (1-p)\cdot 1}
-{p \cdot CN + (1-p)\cdot 2}$$$$\text{depth ratio} =\frac{p \cdot CN + (1-p)\cdot 2}{p \cdot \text{ploidy} + (1-p)\cdot 2}\qquad\text{BAF} =\frac{p \cdot m + (1-p)\cdot 1}{p \cdot CN + (1-p)\cdot 2}$$
+$$\text{depth ratio} =\frac{p \cdot CN + (1-p)\cdot 2}{p \cdot \text{ploidy} + (1-p)\cdot 2}\qquad\text{BAF} =\frac{p \cdot m + (1-p)\cdot 1}{p \cdot CN + (1-p)\cdot 2}$$
 
 PURPLE searches for the purity and ploidy that make these predictions match the observed data best, across the whole genome.
-
-Let's see what these formulas mean in practice. The table shows the expected signal of four common events at different purities (tumor ploidy fixed at 2.8):
-
-```{r}
-library(tidyverse)
-
-expected_signal <- function(purity, cn, minor, ploidy = 2.8) {
-  tibble(
-    depth_ratio = (purity * cn + (1 - purity) * 2) / (purity * ploidy + (1 - purity) * 2),
-    BAF         = (purity * minor + (1 - purity) * 1) / (purity * cn + (1 - purity) * 2)
-  )
-}
-
-events <- tribble(
-  ~event,                  ~cn, ~minor,
-  "Normal (1+1)",           2,   1,
-  "Deep deletion (0+0)",    0,   0,
-  "Copy-neutral LOH (2+0)", 2,   0,
-  "Gain (3+1)",             4,   1
-)
-
-crossing(events, purity = c(1, 0.5, 0.2, 0.05)) %>%
-  mutate(expected_signal(purity, cn, minor)) %>%
-  mutate(across(c(depth_ratio, BAF), ~ round(.x, 2))) %>%
-  arrange(event, desc(purity))
-```
-
-**What to notice**
-
-- At purity 1, a deep deletion has depth ratio 0, and cnLOH has BAF 0 (or 1): very clear signals.
-- At purity 0.05, every event gives a depth ratio close to the genome average and a BAF close to 0.5. The tumor signal is tiny compared with the noise, so low-purity samples are hard to fit.
-- The BAF of a deleted region is undefined at purity 1 (no reads at all). In a mixed sample the remaining reads come only from normal cells, so the BAF goes back to 0.5.
 
 ## Setup
 
@@ -700,18 +662,6 @@ read_tsv(file.path(cobalt_dir, paste0(tour_sample, ".cobalt.ratio.tsv.gz")),
 | `referenceGCContent`, `tumorGCContent` | GC content of the reads in the window |
 | value **-1** | Window not used (N bases, low mappability, extreme GC) |
 
-```{r}
-
-# **`cobalt.ratio.pcf`**: same layout as the AMBER pcf. Here `mean` is a **log2** ratio: use `2^mean` to get back to the ratio scale.
-peek(file.path(cobalt_dir, paste0(tour_sample, ".cobalt.ratio.pcf")))
-
-
-# **`<normal>.cobalt.ratio.median.tsv`**: one line per chromosome. Look at chrX (\~0.5: only one X) and chr16 (\~0.57: part of chr16 is lost in the normal itself).
-read_tsv(file.path(cobalt_dir, "SPP_GT_0-1_1.cobalt.ratio.median.tsv"), show_col_types = FALSE) %>%
-  filter(chromosome %in% c("chr1", "chr6", "chr16", "chr19", "chrX", "chrY"))
-
-```
-
 **`cobalt.gc.median.tsv`**: two blocks. The first gives the sample's mean and median depth; the second the median depth for each GC percentage.\
 **It is important to account for GC bias, as sequencing read counts can vary substantially across regions with different GC content.** Depth is not constant across GC content: in the normal it drops from about 116 (25% GC) to about 90 (60% GC), and both samples lose depth below \~25% GC. If this bias were not removed, GC-rich and GC-poor regions would look like losses or gains. COBALT divides each window's depth by the median of its GC bucket (this curve), so the `tumorGCRatio` / `referenceGCRatio` values are free of GC bias.
 
@@ -733,7 +683,7 @@ bind_rows(
 ## PURPLE: purity, ploidy and copy number
 
 | File | What it is | When to use it |
-|------------------|--------------------------------|----------------------|
+|-----------------------|-----------------------------|--------------------|
 | `<tumor>.purple.purity.tsv` | **The best fit**: purity, ploidy, sex, status, plus the uncertainty range | Report purity/ploidy |
 | `<tumor>.purple.purity.range.tsv` | Score of every purity/ploidy combination tested (\~16,000 rows) | Check whether other solutions are almost as good |
 | `<tumor>.purple.cnv.somatic.tsv` | **Final copy-number segments** (\~300 rows) | Copy number of any region; genome plots; input for downstream tools |
@@ -744,8 +694,6 @@ bind_rows(
 | `plot/*.png` | PURPLE's own figures (purity.range, segment, copynumber, map) | Quick visual QC |
 | `plot/<tumor>.somatic_data.tsv` | Data behind the somatic-variant plots | **Empty here**, same reason |
 | `purple.version` | PURPLE version | Reproducibility |
-
-Files that PURPLE can also write but that are **missing** in this run: `purple.driver.catalog.somatic.tsv` (needs `-driver_gene_panel`), the germline files (`purple.germline.*`, need a matched normal via `-reference`), and `purple.somatic.vcf.gz` (needs `-somatic_vcf`).
 
 **`purple.purity.tsv`**: one line, the chosen fit (columns explained in the QC section).
 
@@ -767,7 +715,28 @@ columns(purple_f(".purple.purity.tsv"), n = 1)
 read_tsv(purple_f(".purple.purity.range.tsv"), show_col_types = FALSE) %>% head(8)
 ```
 
-**`purple.cnv.somatic.tsv`**: the final segments (columns explained in the *PURPLE segments* section below). The `method` column says how the copy number was obtained:
+**`purple.cnv.somatic.tsv`**: the final segments.
+
+| Column | Meaning |
+|------------------------------------|------------------------------------|
+| `chromosome` | Chromosome containing the copy number segment. |
+| `start` | Start genomic coordinate of the segment. |
+| `end` | End genomic coordinate of the segment. |
+| `copyNumber` | Estimated absolute total copy number of the tumor segment, adjusted for tumor purity and ploidy. |
+| `bafCount` | Number of AMBER BAF measurements within the segment. More observations generally provide stronger support. |
+| `observedBAF` | Observed B-allele frequency in the tumor sample, before purity and ploidy adjustment. |
+| `baf` | Estimated tumor BAF after adjusting for purity and ploidy. |
+| `segmentStartSupport` | Type of structural variant or chromosome boundary supporting the start of the segment. |
+| `segmentEndSupport` | Type of structural variant or chromosome boundary supporting the end of the segment. |
+| `method` | Method used to estimate or infer the copy number of the segment. |
+| `depthWindowCount` | Number of COBALT read-depth windows contributing to the segment. |
+| `gcContent` | Proportion of G and C bases in the segment. |
+| `minStart` | Earliest possible start coordinate when the exact segment boundary is uncertain. |
+| `maxStart` | Latest possible start coordinate when the exact segment boundary is uncertain. |
+| `minorAlleleCopyNumber` | Estimated copy number of the less abundant allele, adjusted for tumor purity. Useful for identifying LOH. |
+| `majorAlleleCopyNumber` | Estimated copy number of the more abundant allele, adjusted for tumor purity. |
+
+The `method` column says how the copy number was obtained:
 
 | `method` | Meaning |
 |---------------------------|---------------------------------------------|
@@ -779,7 +748,7 @@ read_tsv(purple_f(".purple.purity.range.tsv"), show_col_types = FALSE) %>% head(
 ```{r}
 cnv_tour <- read_tsv(purple_f(".purple.cnv.somatic.tsv"), show_col_types = FALSE)
 head(cnv_tour)
-count(cnv_tour, method)
+# count(cnv_tour, method)
 ```
 
 **`purple.cnv.gene.tsv`**: one row per gene (columns explained in the *Gain, Loss, Deletion and LOH* section below).
@@ -805,10 +774,9 @@ read_tsv(purple_f(".purple.cnv.gene.tsv"), show_col_types = FALSE) %>%
 
 ```{r}
 segment_tour <- read_tsv(purple_f(".purple.segment.tsv"), show_col_types = FALSE)
-count(segment_tour, germlineStatus, sort = TRUE)
+segment_tour
+# count(segment_tour, germlineStatus, sort = TRUE)
 ```
-
-Most segments are `DIPLOID` in the normal. The `HET_DELETION` segments are places where the **normal** has only one copy: mostly large parts of chr6 (\~58 Mb) and chr16 (\~53 Mb) in this cell line. PURPLE treats these as germline events, so they are not reported as tumor losses.
 
 **`purple.qc`**
 
@@ -894,23 +862,6 @@ combine_pngs(one_sample, ncol = 2, labels = rep("", 4)) +
 
 ## Selection of purity
 
-PURPLE tries a grid of purity (y axis) × ploidy (x axis) combinations and gives each one a score: how badly the predicted depth ratio and BAF fit the data (**lower is better**). In the `purity.range.png` plots:
-
-- colours show the score relative to the best fit; **blue** = within 10% of the best, red = poor;
-- the dashed lines and labels mark the chosen purity and ploidy;
-- several separate blue spots mean several solutions explain the data almost as well (e.g. ploidy 1.4 vs 2.8 at the same purity). This is a common source of errors, because doubling all copy numbers often fits the data equally well.
-
-```{r, fig.width=15, fig.height=9.5}
-combine_pngs(purple.purity_ranges)
-```
-
-**What to notice.**
-
-- **100%**: one sharp blue spot at purity 99%, ploidy 2.82 (plus a small one at ploidy \~1.4, the "half" solution).
-- **75%**: still one clear solution, at the right purity.
-- **50%**: two blue spots: the chosen fit (43%, ploidy 2.86) and an alternative at about 73% purity with ploidy \~4.8. PURPLE picked the right one, but the data alone almost allow the other.
-- **20% and below**: the blue region is a horizontal band at \~15% purity that stretches over many ploidies: PURPLE cannot tell the ploidy, and it reports about the same purity for all three samples.
-
 ## BAF vs copy number: does the fit explain the data?
 
 This plot checks a purity/ploidy fit directly against the data.
@@ -939,7 +890,7 @@ plot_baf_cn(sample_id, purity = NULL, ploidy = NULL, min_baf_count = 10, max_cn 
 By default `plot_baf_cn()` uses PURPLE's fitted purity and ploidy. With these values, `expected_CN()` gives back PURPLE's own `tumorCopyNumber`.
 
 ```{r, fig.width=8, fig.height=7}
-plot_baf_cn("SPP_GT_1-0_1")
+plot_baf_cn("SPP_GT_1-0_1", ploidy = 2.8, purity =1)
 # plot_baf_cn("SPP_GT_1-0_1", purity =1, ploidy = 1.4)
 ```
 
@@ -950,7 +901,7 @@ plot_baf_cn("SPP_GT_1-1_1")
 
 # Test another solution
 # The purity-range plot of SPP_GT_1-1_1 had a second blue spot at about 73% purity and ploidy 4.8. Give these values to plot_baf_cn()
-# plot_baf_cn("SPP_GT_1-1_1", purity = 0.73, ploidy =4.8 ) # 4.8  2
+# plot_baf_cn("SPP_GT_1-1_1", purity = 0.73, ploidy = 4.8 ) # 4.8  2
 ```
 
 **50% purity.** All states move towards BAF 0.5 because of the normal cells (`2+0` is now at BAF \~0.71 instead of 1), but the clouds still sit on the predicted dots. The fit is good.
@@ -970,8 +921,27 @@ At 10% purity all expected states are squeezed close to BAF 0.5, and the observe
 ### check specific chromosome
 
 ```{r, fig.width=16, fig.height=10, out.width="100%", dpi=150}
-plot_chromosome("SPP_GT_1-0_1", "chr1") 
+plot_chromosome("SPP_GT_1-0_1", "chr2") 
 ```
+
+## Purity x Ploidy
+
+PURPLE tries a grid of purity (y axis) × ploidy (x axis) combinations and gives each one a score: how badly the predicted depth ratio and BAF fit the data (**lower is better**). In the `purity.range.png` plots:
+
+- colours show the score relative to the best fit; **blue** = within 10% of the best, red = poor;
+- the dashed lines and labels mark the chosen purity and ploidy;
+- several separate blue spots mean several solutions explain the data almost as well (e.g. ploidy 1.4 vs 2.8 at the same purity). This is a common source of errors, because doubling all copy numbers often fits the data equally well.
+
+```{r, fig.width=15, fig.height=9.5}
+combine_pngs(purple.purity_ranges)
+```
+
+**What to notice.**
+
+- **100%**: one sharp blue spot at purity 99%, ploidy 2.82 (plus a small one at ploidy \~1.4, the "half" solution).
+- **75%**: still one clear solution, at the right purity.
+- **50%**: two blue spots: the chosen fit (43%, ploidy 2.86) and an alternative at about 73% purity with ploidy \~4.8. PURPLE picked the right one, but the data alone almost allow the other.
+- **20% and below**: the blue region is a horizontal band at \~15% purity that stretches over many ploidies: PURPLE cannot tell the ploidy, and it reports about the same purity for all three samples.
 
 ## Segment
 
@@ -1025,7 +995,6 @@ somatic_cnv_gene <- read_tsv(paste0(purple_dir, sample_id, ".purple.cnv.gene.tsv
 sample_ploidy    <- read_tsv(paste0(purple_dir, sample_id, ".purple.purity.tsv"), show_col_types = FALSE)$ploidy
 
 somatic_cnv_gene <- classify_gene_cn(somatic_cnv_gene, ploidy = sample_ploidy)
-sample_ploidy
 ```
 
 `classify_gene_cn()` gives each gene one label, **relative to the ploidy of the sample** (a gene with 3 copies is a gain in a diploid tumor but normal in a triploid one). Rules, checked in this order:
@@ -1080,24 +1049,6 @@ somatic_cnv_gene %>%
 | **CCND1**, **BRCA2** | CN ≈ 4-5 | **Gain** |
 | **PTEN**, **BRCA1** | CN ≈ 2, minor 0 | **Copy-neutral LOH**: one allele lost, the other duplicated |
 | **TP53** | CN ≈ 2.8, minor 0 | **LOH** without a change in total copy number relative to ploidy |
-
-Example: **CDKN2A** (chr9:21,967,751-21,994,490). Each dot is one gene on chr9; the copy number drops to 0 around CDKN2A.
-
-```{r, fig.width=8, fig.height=4}
-cdkn2a <- c(21967751, 21994490)
-
-p_all <- somatic_cnv_gene %>% filter(chromosome == "chr9") %>%
-  ggplot(aes(x = start / 1e6, y = maxCopyNumber)) + geom_point(size = 0.5) +
-  geom_vline(xintercept = cdkn2a / 1e6, linetype = 2, colour = "red3") +
-  labs(x = "chr9 (Mb)", y = "Max CN") + theme_bw()
-
-p_zoom <- somatic_cnv_gene %>% filter(chromosome == "chr9", between(start, 21.5e6, 22.5e6)) %>%
-  ggplot(aes(x = start / 1e6, y = maxCopyNumber)) + geom_point() +
-  geom_vline(xintercept = cdkn2a / 1e6, linetype = 2, colour = "red3") +
-  labs(x = "chr9 (Mb), zoom 21.5-22.5", y = "Max CN") + theme_bw()
-
-p_all | p_zoom
-```
 
 # Visualize a gene or a chromosome
 
