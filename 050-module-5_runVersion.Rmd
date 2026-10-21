@@ -877,13 +877,13 @@ Segments with many het SNPs count more (the density is weighted by `bafCount`). 
 
 **Expected (black dots).** For the same purity *p*, every allele state "major+minor" (e.g. `2+1`) predicts where its segments should fall:
 
-$$\text{BAF} = \frac{p\cdot\text{major} + (1-p)}{p\cdot(\text{major}+\text{minor}) + 2(1-p)}, \qquad CN = \text{major}+\text{minor}$$
+$$\text{BAF} = \frac{p\cdot\text{minor} + (1-p)}{p\cdot(\text{major}+\text{minor}) + 2(1-p)}, \qquad CN = \text{major}+\text{minor}$$
 
 **A good fit puts the dense clouds on the black dots.** The functions behind the plot (in `codes/purple_lab_functions.R`):
 
 ``` r
 expected_CN(ratio, p, CN_R = ploidy)     # depth ratio -> tumor copy number
-calc_baf(purity, nA = minor, nB = major) # expected BAF of an allele state
+calc_baf(purity, nA = major, nB = minor) # expected BAF of an allele state
 plot_baf_cn(sample_id, purity = NULL, ploidy = NULL, min_baf_count = 10, max_cn = 8)
 ```
 
